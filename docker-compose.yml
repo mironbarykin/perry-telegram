@@ -1,0 +1,15 @@
+services:
+  app:
+    container_name: ${PROJECT_NAME}
+    image: ${IMAGE_NAME}
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    ports:
+      - "${HOST_PORT}:${APP_PORT}"
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    env_file:
+      - .env
+    restart: unless-stopped
