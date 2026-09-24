@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.client import TelegramClient
 from app.config import Settings, get_settings
 from app.agent import AgentClient
+from app.formatting import markdown_to_telegram_html
 from app.schema import SendRequest, SendResponse, TelegramUpdate
 
 logger = logging.getLogger(__name__)
@@ -57,13 +58,20 @@ async def telegram_webhook(
             except Exception:
                 logger.exception("confirmation engine call failed")
                 reply = "I could not confirm that action. Please try again."
-            await telegram.send_message(chat_id=callback.message.chat.id, text=reply)
+            await telegram.send_message(
+                chat_id=callback.message.chat.id,
+                text=markdown_to_telegram_html(reply),
+                parse_mode="HTML",
+            )
         else:
             await telegram.decline_action(
                 confirmation_id=confirmation_id,
                 user_telegram_id=callback.from_.id,
             )
-            await telegram.send_message(chat_id=callback.message.chat.id, text="Action declined.")
+            await telegram.send_message(
+                chat_id=callback.message.chat.id,
+                text="Action declined.",
+            )
         return {"ok": True}
 
     message = update.message or update.edited_message
@@ -129,14 +137,16 @@ async def telegram_webhook(
         await telegram.edit_message_text(
             chat_id=message.chat.id,
             message_id=placeholder_message_id,
-            text=agent_response.reply,
+            text=markdown_to_telegram_html(agent_response.reply),
             reply_markup=reply_markup,
+            parse_mode="HTML",
         )
     else:
         await telegram.send_message(
             chat_id=message.chat.id,
-            text=agent_response.reply,
+            text=markdown_to_telegram_html(agent_response.reply),
             reply_markup=reply_markup,
+            parse_mode="HTML",
         )
     return {"ok": True}
 

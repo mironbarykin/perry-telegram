@@ -52,10 +52,13 @@ class TelegramClient:
         message_id: int,
         text: str,
         reply_markup: dict | None = None,
+        parse_mode: str | None = None,
     ) -> dict:
         payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text}
         if reply_markup:
             payload["reply_markup"] = reply_markup
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
 
         resp = await self._http.post(f"{self._base}/editMessageText", json=payload)
         resp.raise_for_status()
