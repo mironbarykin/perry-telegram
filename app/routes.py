@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.client import TelegramClient
@@ -84,6 +85,14 @@ async def telegram_webhook(
         telegram_id = message.from_.id if message.from_ else message.chat.id
         try:
             authorization = await agent.authorize_google_calendar(telegram_id)
+        except httpx.HTTPStatusError as exc:
+            detail = _engine_error_detail(exc)
+            logger.error("google calendar authorization rejected: %s", detail)
+            await telegram.send_message(
+                chat_id=message.chat.id,
+                text=f"Google Calendar connection failed: {detail}",
+            )
+            return {"ok": True}
         except Exception:
             logger.exception("google calendar authorization request failed")
             await telegram.send_message(
@@ -168,3 +177,15 @@ async def send_message(
         ok=bool(result.get("ok")),
         telegram_message_id=(result.get("result") or {}).get("message_id"),
     )
+
+
+def _engine_error_detail(error: httpx.HTTPStatusError) -> str:
+    try:
+        payload = error.response.json()
+    except ValueError:
+        return f"engine returned HTTP {error.response.status_code}"
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, str) and detail:
+        return detail
+    return f"engine returned HTTP {error.response.status_code}"

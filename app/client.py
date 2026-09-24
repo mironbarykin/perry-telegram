@@ -75,7 +75,7 @@ class TelegramClient:
         )
         resp = await self._http.post(
             url,
-            json={"user_telegram_id": user_telegram_id},
+            json={"telegram_id": user_telegram_id},
             headers={"X-API-Key": f"{self._settings.agent_api_key}"},
         )
         resp.raise_for_status()
