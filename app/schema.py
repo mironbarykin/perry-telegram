@@ -47,6 +47,14 @@ class AgentRequest(BaseModel):
     message: str
 
 
+class CalendarAuthorizationRequest(BaseModel):
+    telegram_id: int = Field(gt=0)
+
+
+class CalendarAuthorizationResponse(BaseModel):
+    authorization_url: str = Field(min_length=1)
+
+
 class AgentResponse(BaseModel):
     reply: str
     pending_confirmations: list["PendingConfirmation"] = Field(default_factory=list)

@@ -103,7 +103,7 @@ class TelegramClient:
         confirmation_id: str,
         user_telegram_id: int,
     ) -> None:
-        # TODO: Call the engine once decline semantics are available:
+        # TODO: call the engine once decline semantics are available:
         # await self._http.delete(
         #     f"{self._settings.agent_api_url.rstrip('/')}/confirmations/"
         #     f"{quote(confirmation_id, safe='')}",

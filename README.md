@@ -13,3 +13,10 @@ poetry run uvicorn app.main:app --reload
 ```
 
 The health check is available at `/health`. Set `PUBLIC_BASE_URL` when the service is publicly reachable so the Telegram webhook is registered automatically.
+
+### Connect Google Calendar
+
+Send `/connect-calendar` to the Telegram bot. The connector asks Perry Engine
+to create a user-scoped Google OAuth consent URL and sends that URL back to the
+user. Google redirects to the callback configured on Perry Engine; the Telegram
+connector does not proxy the callback.

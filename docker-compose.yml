@@ -2,14 +2,19 @@ services:
   app:
     container_name: ${PROJECT_NAME}
     image: ${IMAGE_NAME}
-    build:
-      context: ./
-      dockerfile: Dockerfile
     ports:
-      - "${HOST_PORT}:${APP_PORT}"
+      - "127.0.0.1:${HOST_PORT}:${APP_PORT}"
     volumes:
       - ./data:/data
       - ./logs:/logs
     env_file:
       - .env
+    networks:
+      - perry_net
     restart: unless-stopped
+ 
+networks:
+  perry_net:
+    external: true
+    name: perry_net
+ 

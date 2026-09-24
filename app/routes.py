@@ -71,6 +71,28 @@ async def telegram_webhook(
         return {"ok": True}
 
     user_id = str(message.from_.id) if message.from_ else str(message.chat.id)
+    command = message.text.split(maxsplit=1)[0].lower()
+    if command == "/connect-calendar" or command.startswith("/connect-calendar@"):
+        telegram_id = message.from_.id if message.from_ else message.chat.id
+        try:
+            authorization = await agent.authorize_google_calendar(telegram_id)
+        except Exception:
+            logger.exception("google calendar authorization request failed")
+            await telegram.send_message(
+                chat_id=message.chat.id,
+                text="I could not start Google Calendar connection. Please try again later.",
+            )
+            return {"ok": True}
+
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "Open this link to connect Google Calendar:\n"
+                f"{authorization.authorization_url}"
+            ),
+        )
+        return {"ok": True}
+
     await telegram.send_chat_action(chat_id=message.chat.id)
     placeholder = await telegram.send_message(chat_id=message.chat.id, text="Thinking...")
     placeholder_message_id = (placeholder.get("result") or {}).get("message_id")
