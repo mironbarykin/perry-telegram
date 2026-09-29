@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -53,6 +54,32 @@ async def telegram_webhook(
             return {"ok": True}
 
         action, separator, confirmation_id = callback.data.partition(":")
+        if action == "confirm_all":
+            confirmation_batches = getattr(request.app.state, "confirmation_batches", {})
+            confirmation_ids = confirmation_batches.pop(confirmation_id, None)
+            if separator != ":" or not confirmation_id or confirmation_ids is None:
+                return {"ok": True}
+
+            current_text = (callback.message.text or "").strip()
+            try:
+                await agent.confirm_actions(
+                    confirmation_ids=confirmation_ids,
+                    telegram_id=callback.from_.id,
+                )
+            except Exception:
+                logger.exception("confirm all engine call failed")
+                edited_text = f"(Confirmation failed) {current_text or 'Confirmation request'}"
+            else:
+                edited_text = f"(All confirmed) {current_text or 'Confirmation request'}"
+
+            await telegram.edit_message_text(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                text=edited_text,
+                reply_markup={"inline_keyboard": []},
+            )
+            return {"ok": True}
+
         if separator != ":" or action not in {"confirm", "decline"} or not confirmation_id:
             return {"ok": True}
 
@@ -123,10 +150,14 @@ async def telegram_webhook(
 
     placeholder = await telegram.send_message(chat_id=message.chat.id, text="Thinking...")
     placeholder_message_id = (placeholder.get("result") or {}).get("message_id")
+    confirmation_batches = getattr(request.app.state, "confirmation_batches", None)
+    if confirmation_batches is None:
+        confirmation_batches = request.app.state.confirmation_batches = {}
     task = asyncio.create_task(
         _process_agent_message(
             telegram,
             agent,
+            confirmation_batches,
             chat_id=message.chat.id,
             user_id=user_id,
             text=message.text,
@@ -150,6 +181,7 @@ async def telegram_webhook(
 async def _process_agent_message(
     telegram: TelegramClient,
     agent: AgentClient,
+    confirmation_batches: dict[str, list[str]],
     *,
     chat_id: int,
     user_id: str,
@@ -171,6 +203,23 @@ async def _process_agent_message(
         reply = "Hi, I'm busy rn. Please try again later ;)"
         agent_response = None
 
+    reply_markup = None
+    if agent_response is not None and agent_response.pending_confirmations:
+        confirmation_token = uuid4().hex
+        confirmation_batches[confirmation_token] = [
+            confirmation.id for confirmation in agent_response.pending_confirmations
+        ]
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Confirm all",
+                        "callback_data": f"confirm_all:{confirmation_token}",
+                    }
+                ]
+            ]
+        }
+
     try:
         reply_chunks = split_message(reply)
         if placeholder_message_id is not None:
@@ -180,6 +229,7 @@ async def _process_agent_message(
                     chat_id=chat_id,
                     message_id=placeholder_message_id,
                     markdown=reply_chunks[0],
+                    reply_markup=reply_markup if len(reply_chunks) == 1 else None,
                 )
                 chunks_to_send = reply_chunks[1:]
                 logger.info("edited Thinking message for chat %s", chat_id)
@@ -188,13 +238,27 @@ async def _process_agent_message(
                     "failed to edit Thinking message for chat %s; sending a new plain-text reply",
                     chat_id,
                 )
-                await telegram.send_message(chat_id=chat_id, text=reply_chunks[0])
+                await telegram.send_message(
+                    chat_id=chat_id,
+                    text=reply_chunks[0],
+                    reply_markup=reply_markup if len(reply_chunks) == 1 else None,
+                )
                 chunks_to_send = reply_chunks[1:]
-            for chunk in chunks_to_send:
-                await _send_formatted_message(telegram, chat_id=chat_id, markdown=chunk)
+            for index, chunk in enumerate(chunks_to_send):
+                await _send_formatted_message(
+                    telegram,
+                    chat_id=chat_id,
+                    markdown=chunk,
+                    reply_markup=reply_markup if index == len(chunks_to_send) - 1 else None,
+                )
         else:
-            for chunk in reply_chunks:
-                await _send_formatted_message(telegram, chat_id=chat_id, markdown=chunk)
+            for index, chunk in enumerate(reply_chunks):
+                await _send_formatted_message(
+                    telegram,
+                    chat_id=chat_id,
+                    markdown=chunk,
+                    reply_markup=reply_markup if index == len(reply_chunks) - 1 else None,
+                )
         logger.info("delivered agent response for chat %s", chat_id)
 
         if agent_response is None:
@@ -232,6 +296,7 @@ async def _edit_formatted_message(
     chat_id: int,
     message_id: int,
     markdown: str,
+    reply_markup: dict | None = None,
 ) -> None:
     try:
         await telegram.edit_message_text(
@@ -239,6 +304,7 @@ async def _edit_formatted_message(
             message_id=message_id,
             text=markdown_to_telegram_html(markdown),
             parse_mode="HTML",
+            reply_markup=reply_markup,
         )
     except Exception:
         logger.exception(
@@ -249,6 +315,7 @@ async def _edit_formatted_message(
             chat_id=chat_id,
             message_id=message_id,
             text=markdown,
+            reply_markup=reply_markup,
         )
 
 
@@ -257,19 +324,25 @@ async def _send_formatted_message(
     *,
     chat_id: int,
     markdown: str,
+    reply_markup: dict | None = None,
 ) -> None:
     try:
         await telegram.send_message(
             chat_id=chat_id,
             text=markdown_to_telegram_html(markdown),
             parse_mode="HTML",
+            reply_markup=reply_markup,
         )
     except Exception:
         logger.exception(
             "formatted Telegram message failed for chat %s; retrying as plain text",
             chat_id,
         )
-        await telegram.send_message(chat_id=chat_id, text=markdown)
+        await telegram.send_message(
+            chat_id=chat_id,
+            text=markdown,
+            reply_markup=reply_markup,
+        )
 
 
 @router.post("/send", response_model=SendResponse)

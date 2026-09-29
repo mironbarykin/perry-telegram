@@ -2,6 +2,10 @@
 
 Perry Telegram is a small FastAPI connector between Telegram and the Perry agent engine. It receives Telegram webhook updates, forwards messages to the engine, sends replies back to Telegram, and supports inline approval or decline actions for pending confirmations.
 
+When an agent response contains multiple pending confirmations, the final reply
+message includes a **Confirm all** button that approves every action in that
+response.
+
 ### Setup
 
 1. Copy `.env.example` to `.env` and fill in the required credentials.
