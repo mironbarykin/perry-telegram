@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     agent_api_url: str = Field(..., alias="AGENT_API_URL")
     agent_api_key: str = Field(..., alias="AGENT_API_KEY")
-    agent_timeout_seconds: float = Field(30.0, alias="AGENT_TIMEOUT_SECONDS")
+    agent_timeout_seconds: float = Field(120.0, alias="AGENT_TIMEOUT_SECONDS")
 
     outbound_api_key: str = Field(..., alias="OUTBOUND_API_KEY")
 

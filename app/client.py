@@ -32,19 +32,16 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
 
         resp = await self._http.post(f"{self._base}/sendMessage", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("ok"):
-            logger.error("Telegram sendMessage failed: %s", data)
-        return data
+        self._raise_for_status(resp, "sendMessage")
+        return self._api_result(resp, "sendMessage")
 
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> dict:
         resp = await self._http.post(
             f"{self._base}/sendChatAction",
             json={"chat_id": chat_id, "action": action},
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "sendChatAction")
+        return self._api_result(resp, "sendChatAction")
 
     async def edit_message_text(
         self,
@@ -61,8 +58,8 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
 
         resp = await self._http.post(f"{self._base}/editMessageText", json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "editMessageText")
+        return self._api_result(resp, "editMessageText")
 
     async def confirm_action(
         self,
@@ -78,16 +75,16 @@ class TelegramClient:
             json={"telegram_id": user_telegram_id},
             headers={"X-API-Key": f"{self._settings.agent_api_key}"},
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "confirmAction")
+        return self._api_result(resp, "confirmAction")
 
     async def answer_callback_query(self, callback_query_id: str) -> dict:
         resp = await self._http.post(
             f"{self._base}/answerCallbackQuery",
             json={"callback_query_id": callback_query_id},
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "answerCallbackQuery")
+        return self._api_result(resp, "answerCallbackQuery")
 
     async def clear_inline_keyboard(self, chat_id: int, message_id: int) -> dict:
         resp = await self._http.post(
@@ -98,8 +95,8 @@ class TelegramClient:
                 "reply_markup": {"inline_keyboard": []},
             },
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "editMessageReplyMarkup")
+        return self._api_result(resp, "editMessageReplyMarkup")
 
     async def decline_action(
         self,
@@ -119,13 +116,39 @@ class TelegramClient:
             f"{self._base}/setWebhook",
             json={"url": url, "secret_token": self._settings.telegram_webhook_secret},
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "setWebhook")
+        return self._api_result(resp, "setWebhook")
 
     async def delete_webhook(self) -> dict:
         resp = await self._http.post(f"{self._base}/deleteWebhook")
-        resp.raise_for_status()
-        return resp.json()
+        self._raise_for_status(resp, "deleteWebhook")
+        return self._api_result(resp, "deleteWebhook")
+
+    @staticmethod
+    def _raise_for_status(resp: httpx.Response, operation: str) -> None:
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                detail = resp.json().get("description", resp.text)
+            except ValueError:
+                detail = resp.text
+            logger.error(
+                "Telegram %s returned HTTP %s: %s",
+                operation,
+                resp.status_code,
+                detail,
+            )
+            raise
+
+    @staticmethod
+    def _api_result(resp: httpx.Response, operation: str) -> dict:
+        data = resp.json()
+        if not data.get("ok"):
+            description = data.get("description", "unknown Telegram API error")
+            logger.error("Telegram %s failed: %s", operation, description)
+            raise RuntimeError(f"Telegram {operation} failed: {description}")
+        return data
 
     async def aclose(self) -> None:
         await self._http.aclose()

@@ -65,6 +65,8 @@ class PendingConfirmation(BaseModel):
     action_type: str | None = None
     expires_in_minutes: int | None = None
 
+class ConfirmationRequest(BaseModel):
+    telegram_id: int = Field(gt=0)
 
 class SendRequest(BaseModel):
     chat_id: int

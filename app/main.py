@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from app.agent import AgentClient
 from app.client import TelegramClient
 from app.config import get_settings
+from app.logging import configure_logging
 from app.routes import router
 
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    logging.getLogger().setLevel(settings.log_level)
+    configure_logging(settings.log_level, settings.telegram_bot_token)
 
     app.state.telegram_client = TelegramClient(settings)
     app.state.agent_client = AgentClient(settings)

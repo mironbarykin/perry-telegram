@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -8,12 +9,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.client import TelegramClient
 from app.config import Settings, get_settings
 from app.agent import AgentClient
-from app.formatting import markdown_to_telegram_html
 from app.schema import SendRequest, SendResponse, TelegramUpdate
+from app.formatting import markdown_to_telegram_html, split_message
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
 
 def get_telegram_client(request: Request) -> TelegramClient:
     return request.app.state.telegram_client
@@ -26,6 +26,7 @@ def get_agent_client(request: Request) -> AgentClient:
 @router.post("/webhook/telegram", status_code=status.HTTP_200_OK)
 async def telegram_webhook(
     update: TelegramUpdate,
+    request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
     telegram: TelegramClient = Depends(get_telegram_client),
@@ -33,6 +34,17 @@ async def telegram_webhook(
 ):
     if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad secret token")
+
+    logger.info("received Telegram update %s", update.update_id)
+    processed_update_ids = getattr(request.app.state, "processed_update_ids", None)
+    if processed_update_ids is None:
+        processed_update_ids = request.app.state.processed_update_ids = set()
+    if update.update_id in processed_update_ids:
+        logger.info("ignoring duplicate Telegram update %s", update.update_id)
+        return {"ok": True}
+    processed_update_ids.add(update.update_id)
+    if len(processed_update_ids) > 10_000:
+        processed_update_ids.pop()
 
     callback = update.callback_query
     if callback is not None:
@@ -44,40 +56,39 @@ async def telegram_webhook(
         if separator != ":" or action not in {"confirm", "decline"} or not confirmation_id:
             return {"ok": True}
 
-        await telegram.clear_inline_keyboard(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-        )
+        confirmation_status = "A" if action == "confirm" else "D"
+        current_text = (callback.message.text or "").strip()
+        confirmation_text = current_text or confirmation_id
+        edited_text = f"({confirmation_status}) {confirmation_text}"
 
         if action == "confirm":
             try:
-                result = await telegram.confirm_action(
+                await telegram.confirm_action(
                     confirmation_id=confirmation_id,
                     user_telegram_id=callback.from_.id,
                 )
-                reply = result.get("message", "Action confirmed.")
             except Exception:
                 logger.exception("confirmation engine call failed")
-                reply = "I could not confirm that action. Please try again."
-            await telegram.send_message(
-                chat_id=callback.message.chat.id,
-                text=markdown_to_telegram_html(reply),
-                parse_mode="HTML",
-            )
         else:
             await telegram.decline_action(
                 confirmation_id=confirmation_id,
                 user_telegram_id=callback.from_.id,
             )
-            await telegram.send_message(
-                chat_id=callback.message.chat.id,
-                text="Action declined.",
-            )
+
+        await telegram.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=edited_text,
+            reply_markup={"inline_keyboard": []},
+        )
         return {"ok": True}
 
     message = update.message or update.edited_message
     if message is None or message.text is None:
-        return {"ok": True}
+        return await telegram.send_message(
+            chat_id=message.chat.id if message else 0,
+            text="I can only process text messages for now.",
+        )
 
     user_id = str(message.from_.id) if message.from_ else str(message.chat.id)
     command = message.text.split(maxsplit=1)[0].lower()
@@ -110,54 +121,155 @@ async def telegram_webhook(
         )
         return {"ok": True}
 
-    await telegram.send_chat_action(chat_id=message.chat.id)
     placeholder = await telegram.send_message(chat_id=message.chat.id, text="Thinking...")
     placeholder_message_id = (placeholder.get("result") or {}).get("message_id")
-
-    try:
-        agent_response = await agent.ask(
+    task = asyncio.create_task(
+        _process_agent_message(
+            telegram,
+            agent,
+            chat_id=message.chat.id,
             user_id=user_id,
             text=message.text,
+            placeholder_message_id=placeholder_message_id,
+        )
+    )
+    tasks = getattr(request.app.state, "agent_tasks", None)
+    if tasks is None:
+        tasks = request.app.state.agent_tasks = set()
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    logger.info(
+        "queued agent request for Telegram update %s (chat %s, placeholder %s)",
+        update.update_id,
+        message.chat.id,
+        placeholder_message_id,
+    )
+    return {"ok": True}
+
+
+async def _process_agent_message(
+    telegram: TelegramClient,
+    agent: AgentClient,
+    *,
+    chat_id: int,
+    user_id: str,
+    text: str,
+    placeholder_message_id: int | None,
+) -> None:
+    logger.info("starting agent request for chat %s", chat_id)
+    try:
+        agent_response = await agent.ask(user_id=user_id, text=text)
+        reply = agent_response.reply
+        logger.info(
+            "agent request completed for chat %s (%d reply characters, %d confirmations)",
+            chat_id,
+            len(reply),
+            len(agent_response.pending_confirmations),
+        )
+    except Exception as exc:
+        logger.exception("agent engine call failed (%s: %s)", type(exc).__name__, exc)
+        reply = "Hi, I'm busy rn. Please try again later ;)"
+        agent_response = None
+
+    try:
+        reply_chunks = split_message(reply)
+        if placeholder_message_id is not None:
+            try:
+                await _edit_formatted_message(
+                    telegram,
+                    chat_id=chat_id,
+                    message_id=placeholder_message_id,
+                    markdown=reply_chunks[0],
+                )
+                chunks_to_send = reply_chunks[1:]
+                logger.info("edited Thinking message for chat %s", chat_id)
+            except Exception:
+                logger.exception(
+                    "failed to edit Thinking message for chat %s; sending a new plain-text reply",
+                    chat_id,
+                )
+                await telegram.send_message(chat_id=chat_id, text=reply_chunks[0])
+                chunks_to_send = reply_chunks[1:]
+            for chunk in chunks_to_send:
+                await _send_formatted_message(telegram, chat_id=chat_id, markdown=chunk)
+        else:
+            for chunk in reply_chunks:
+                await _send_formatted_message(telegram, chat_id=chat_id, markdown=chunk)
+        logger.info("delivered agent response for chat %s", chat_id)
+
+        if agent_response is None:
+            return
+
+        for confirmation in agent_response.pending_confirmations:
+            details = " ".join(
+                part for part in [confirmation.id, confirmation.action_type] if part
+            )
+            await telegram.send_message(
+                chat_id=chat_id,
+                text=details or "Confirmation request",
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Approve",
+                                "callback_data": f"confirm:{confirmation.id}",
+                            },
+                            {
+                                "text": "Decline",
+                                "callback_data": f"decline:{confirmation.id}",
+                            },
+                        ]
+                    ]
+                },
+            )
+    except Exception:
+        logger.exception("failed to deliver agent response to Telegram for chat %s", chat_id)
+
+
+async def _edit_formatted_message(
+    telegram: TelegramClient,
+    *,
+    chat_id: int,
+    message_id: int,
+    markdown: str,
+) -> None:
+    try:
+        await telegram.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=markdown_to_telegram_html(markdown),
+            parse_mode="HTML",
         )
     except Exception:
-        logger.exception("agent engine call failed")
-        reply = "Hi, I\'m busy rn. Please try again later ;)"
-        if placeholder_message_id is not None:
-            await telegram.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=placeholder_message_id,
-                text=reply,
-            )
-        else:
-            await telegram.send_message(chat_id=message.chat.id, text=reply)
-        return {"ok": True}
-
-    keyboard = []
-    for confirmation in agent_response.pending_confirmations:
-        keyboard.append(
-            [
-                {"text": "Approve", "callback_data": f"confirm:{confirmation.id}"},
-                {"text": "Decline", "callback_data": f"decline:{confirmation.id}"},
-            ]
+        logger.exception(
+            "formatted Telegram edit failed for chat %s; retrying as plain text",
+            chat_id,
         )
-
-    reply_markup = {"inline_keyboard": keyboard} if keyboard else None
-    if placeholder_message_id is not None:
         await telegram.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=placeholder_message_id,
-            text=markdown_to_telegram_html(agent_response.reply),
-            reply_markup=reply_markup,
-            parse_mode="HTML",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=markdown,
         )
-    else:
+
+
+async def _send_formatted_message(
+    telegram: TelegramClient,
+    *,
+    chat_id: int,
+    markdown: str,
+) -> None:
+    try:
         await telegram.send_message(
-            chat_id=message.chat.id,
-            text=markdown_to_telegram_html(agent_response.reply),
-            reply_markup=reply_markup,
+            chat_id=chat_id,
+            text=markdown_to_telegram_html(markdown),
             parse_mode="HTML",
         )
-    return {"ok": True}
+    except Exception:
+        logger.exception(
+            "formatted Telegram message failed for chat %s; retrying as plain text",
+            chat_id,
+        )
+        await telegram.send_message(chat_id=chat_id, text=markdown)
 
 
 @router.post("/send", response_model=SendResponse)

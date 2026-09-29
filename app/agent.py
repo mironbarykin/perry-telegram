@@ -10,6 +10,7 @@ from app.schema import (
     AgentResponse,
     CalendarAuthorizationRequest,
     CalendarAuthorizationResponse,
+    ConfirmationRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,12 @@ class AgentClient:
 
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
-        self._http = http or httpx.AsyncClient(timeout=settings.agent_timeout_seconds)
+        self._http = http or httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                settings.agent_timeout_seconds,
+                connect=10.0,
+            )
+        )
 
     async def ask(
         self,
@@ -50,6 +56,22 @@ class AgentClient:
         )
         resp.raise_for_status()
         return CalendarAuthorizationResponse.model_validate(resp.json())
+
+    async def confirm_actions(
+        self,
+        confirmation_ids: list[str],
+        telegram_id: int,
+    ) -> None:
+        request = ConfirmationRequest(telegram_id=telegram_id)
+        
+        for confirmation in confirmation_ids:
+            resp = await self._http.post(
+                f"{self._settings.agent_api_url.rstrip('/')}/confirmations/{confirmation}",
+                json=request.model_dump(),
+                headers={"X-API-Key": self._settings.agent_api_key},
+            )
+            resp.raise_for_status()
+
 
     async def aclose(self) -> None:
         await self._http.aclose()
