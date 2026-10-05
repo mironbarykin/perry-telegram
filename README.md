@@ -6,6 +6,9 @@ When an agent response contains multiple pending confirmations, the final reply
 message includes a **Confirm all** button that approves every action in that
 response.
 
+Individual confirmation prompts are sent silently so they do not generate an
+additional Telegram notification.
+
 ### Setup
 
 1. Copy `.env.example` to `.env` and fill in the required credentials.

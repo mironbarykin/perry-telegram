@@ -24,12 +24,15 @@ class TelegramClient:
         text: str,
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
+        disable_notification: bool = False,
     ) -> dict:
         payload: dict = {"chat_id": chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
+        if disable_notification:
+            payload["disable_notification"] = True
 
         resp = await self._http.post(f"{self._base}/sendMessage", json=payload)
         self._raise_for_status(resp, "sendMessage")

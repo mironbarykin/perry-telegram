@@ -119,7 +119,7 @@ async def telegram_webhook(
 
     user_id = str(message.from_.id) if message.from_ else str(message.chat.id)
     command = message.text.split(maxsplit=1)[0].lower()
-    if command == "/connect-calendar" or command.startswith("/connect-calendar@"):
+    if command == "/connect-calendar" or command.startswith("/connect"):
         telegram_id = message.from_.id if message.from_ else message.chat.id
         try:
             authorization = await agent.authorize_google_calendar(telegram_id)
@@ -145,6 +145,13 @@ async def telegram_webhook(
                 "Open this link to connect Google Calendar:\n"
                 f"{authorization.authorization_url}"
             ),
+        )
+        return {"ok": True}
+
+    if command.startswith('/'):
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text="I don't recognize that command. Please contact Miron for infos ;).",
         )
         return {"ok": True}
 
@@ -271,6 +278,7 @@ async def _process_agent_message(
             await telegram.send_message(
                 chat_id=chat_id,
                 text=details or "Confirmation request",
+                disable_notification=True,
                 reply_markup={
                     "inline_keyboard": [
                         [
