@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     agent_api_url: str = Field(..., alias="AGENT_API_URL")
     agent_api_key: str = Field(..., alias="AGENT_API_KEY")
     agent_timeout_seconds: float = Field(120.0, alias="AGENT_TIMEOUT_SECONDS")
+    telegram_message_debounce_seconds: float = Field(
+        0.5, alias="TELEGRAM_MESSAGE_DEBOUNCE_SECONDS", gt=0
+    )
+    telegram_thinking_rotation_seconds: float = Field(
+        5.0, alias="TELEGRAM_THINKING_ROTATION_SECONDS", gt=0
+    )
 
     outbound_api_key: str = Field(..., alias="OUTBOUND_API_KEY")
 

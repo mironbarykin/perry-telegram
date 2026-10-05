@@ -13,9 +13,21 @@ from app.agent import AgentClient
 from app.schema import SendRequest, SendResponse, TelegramUpdate
 from app.formatting import markdown_to_telegram_html, split_message
 from app.logging import audit_event
+from app.queue import ChatMessageQueue, MessageBatch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+THINKING_PHRASES = (
+    "⏳Thinking through it...",
+    "⌛Connecting the dots...",
+    "⏳Checking the details...",
+    "⌛Consulting my brain...",
+    "⏳Organizing my thoughts...",
+    "⌛Looking into the past...",
+    "⏳Asking the helpful electrons...",
+    "⌛Polishing the answer...",
+    "⏳Almost there...",
+)
 
 def get_telegram_client(request: Request) -> TelegramClient:
     return request.app.state.telegram_client
@@ -181,49 +193,40 @@ async def telegram_webhook(
         )
         return {"ok": True}
 
-    placeholder = await telegram.send_message(chat_id=message.chat.id, text="Thinking...")
-    placeholder_message_id = (placeholder.get("result") or {}).get("message_id")
     confirmation_batches = getattr(request.app.state, "confirmation_batches", None)
     if confirmation_batches is None:
         confirmation_batches = request.app.state.confirmation_batches = {}
-    task = asyncio.create_task(
-        _process_agent_message(
-            telegram,
-            agent,
-            confirmation_batches,
-            chat_id=message.chat.id,
-            user_id=user_id,
-            text=message.text,
-            placeholder_message_id=placeholder_message_id,
-        )
-    )
-    tasks = getattr(request.app.state, "agent_tasks", None)
-    if tasks is None:
-        tasks = request.app.state.agent_tasks = set()
-    tasks.add(task)
-    task.add_done_callback(tasks.discard)
+    queue: ChatMessageQueue = request.app.state.message_queue
+    await queue.enqueue(message.chat.id, user_id, message.text)
     logger.info(
-        "queued agent request for Telegram update %s (chat %s, placeholder %s)",
+        "queued agent request for Telegram update %s (chat %s)",
         update.update_id,
         message.chat.id,
-        placeholder_message_id,
     )
     return {"ok": True}
 
 
-async def _process_agent_message(
+async def process_message_batch(
     telegram: TelegramClient,
     agent: AgentClient,
     confirmation_batches: dict[str, list[str]],
-    *,
-    chat_id: int,
-    user_id: str,
-    text: str,
-    placeholder_message_id: int | None,
+    batch: MessageBatch,
+    thinking_rotation_seconds: float,
 ) -> None:
+    chat_id = batch.chat_id
+    text = "\n".join(batch.texts)
+    placeholder = await telegram.send_message(
+        chat_id=chat_id, text=THINKING_PHRASES[0]
+    )
+    placeholder_message_id = (placeholder.get("result") or {}).get("message_id")
+    thinking_task = asyncio.create_task(
+        _rotate_thinking_status(
+            telegram, chat_id, placeholder_message_id, thinking_rotation_seconds
+        )
+    )
     logger.info("starting agent request for chat %s", chat_id)
     try:
-        agent_response = await agent.ask(user_id=user_id, text=text)
+        agent_response = await agent.ask(user_id=batch.user_id, text=text)
         reply = agent_response.reply
         logger.info(
             "agent request completed for chat %s (%d reply characters, %d confirmations)",
@@ -254,6 +257,17 @@ async def _process_agent_message(
         }
 
     try:
+        thinking_task.cancel()
+        await asyncio.gather(thinking_task, return_exceptions=True)
+        if placeholder_message_id is not None:
+            try:
+                await telegram.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=placeholder_message_id,
+                    text=f"{THINKING_PHRASES[0][2:]}",
+                )
+            except Exception:
+                logger.exception("failed to mark thinking status for chat %s", chat_id)
         reply_chunks = split_message(reply)
         if placeholder_message_id is not None:
             try:
@@ -322,6 +336,30 @@ async def _process_agent_message(
             )
     except Exception:
         logger.exception("failed to deliver agent response to Telegram for chat %s", chat_id)
+
+
+async def _rotate_thinking_status(
+    telegram: TelegramClient,
+    chat_id: int,
+    message_id: int | None,
+    interval_seconds: float,
+) -> None:
+    if message_id is None:
+        return
+    index = 0
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            index = (index + 1) % len(THINKING_PHRASES)
+            await telegram.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"{THINKING_PHRASES[index]}",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("failed to rotate thinking status for chat %s", chat_id)
 
 
 async def _edit_formatted_message(

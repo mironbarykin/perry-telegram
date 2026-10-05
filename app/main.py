@@ -11,7 +11,8 @@ from app.agent import AgentClient
 from app.client import TelegramClient
 from app.config import get_settings
 from app.logging import audit_event, close_logging, configure_logging
-from app.routes import router
+from app.queue import ChatMessageQueue
+from app.routes import process_message_batch, router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,17 @@ async def lifespan(app: FastAPI):
 
     app.state.telegram_client = TelegramClient(settings)
     app.state.agent_client = AgentClient(settings)
+    app.state.confirmation_batches = {}
+    app.state.message_queue = ChatMessageQueue(
+        settings.telegram_message_debounce_seconds,
+        lambda batch: process_message_batch(
+            app.state.telegram_client,
+            app.state.agent_client,
+            app.state.confirmation_batches,
+            batch,
+            settings.telegram_thinking_rotation_seconds,
+        ),
+    )
 
     if settings.public_base_url:
         webhook_url = f"{settings.public_base_url.rstrip('/')}/webhook/telegram"
@@ -40,6 +52,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await app.state.message_queue.shutdown()
     await app.state.telegram_client.aclose()
     await app.state.agent_client.aclose()
     close_logging()
