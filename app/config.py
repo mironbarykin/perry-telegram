@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     public_base_url: str | None = Field(None, alias="PUBLIC_BASE_URL")
 
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    log_directory: str = Field("/logs", alias="LOG_DIRECTORY")
+    audit_log_raw_content: bool = Field(True, alias="AUDIT_LOG_RAW_CONTENT")
 
 
 @lru_cache

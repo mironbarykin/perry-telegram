@@ -20,7 +20,7 @@ def markdown_to_telegram_html(markdown: str) -> str:
         stripped = line.strip()
         if stripped.startswith("```"):
             if in_code_block:
-                rendered_lines.append("</code>")
+                rendered_lines.append("</code></pre>")
                 in_code_block = False
             else:
                 rendered_lines.append("<pre><code>")
@@ -47,7 +47,7 @@ def markdown_to_telegram_html(markdown: str) -> str:
                 line = f"• {bullet.group(1)}"
         rendered_lines.append(_render_inline(line))
     if in_code_block:
-        rendered_lines.append("</code>")
+        rendered_lines.append("</code></pre>")
     return "\n".join(rendered_lines)
 
 

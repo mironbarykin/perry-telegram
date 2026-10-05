@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import quote
 
 import httpx
 
 from app.config import Settings
+from app.logging import audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,16 @@ class TelegramClient:
         if disable_notification:
             payload["disable_notification"] = True
 
+        started = time.perf_counter()
         resp = await self._http.post(f"{self._base}/sendMessage", json=payload)
+        audit_event(
+            "telegram.api.request",
+            raw_content=True,
+            operation="sendMessage",
+            payload=payload,
+            status_code=resp.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
         self._raise_for_status(resp, "sendMessage")
         return self._api_result(resp, "sendMessage")
 
@@ -60,7 +71,15 @@ class TelegramClient:
         if parse_mode:
             payload["parse_mode"] = parse_mode
 
+        started = time.perf_counter()
         resp = await self._http.post(f"{self._base}/editMessageText", json=payload)
+        audit_event(
+            "telegram.api.request",
+            operation="editMessageText",
+            payload=payload,
+            status_code=resp.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
         self._raise_for_status(resp, "editMessageText")
         return self._api_result(resp, "editMessageText")
 

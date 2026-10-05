@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from app.config import Settings
+from app.logging import audit_event
 from app.schema import (
     AgentRequest,
     AgentResponse,
@@ -35,10 +37,19 @@ class AgentClient:
     ) -> AgentResponse:
         request = AgentRequest(telegram_id=user_id, message=text)
 
+        payload = request.model_dump()
+        started = time.perf_counter()
         resp = await self._http.post(
             self._settings.agent_api_url + '/chat',
-            json=request.model_dump(),
+            json=payload,
             headers={"X-API-Key": f"{self._settings.agent_api_key}"},
+        )
+        audit_event(
+            "agent.api.request",
+            operation="chat",
+            payload=payload,
+            status_code=resp.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
         resp.raise_for_status()
         return AgentResponse.model_validate(resp.json())
@@ -49,10 +60,19 @@ class AgentClient:
     ) -> CalendarAuthorizationResponse:
         request = CalendarAuthorizationRequest(telegram_id=telegram_id)
 
+        payload = request.model_dump()
+        started = time.perf_counter()
         resp = await self._http.post(
             f"{self._settings.agent_api_url.rstrip('/')}/integrations/google/calendar/authorize",
-            json=request.model_dump(),
+            json=payload,
             headers={"X-API-Key": self._settings.agent_api_key},
+        )
+        audit_event(
+            "agent.api.request",
+            operation="authorize_google_calendar",
+            payload=payload,
+            status_code=resp.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
         resp.raise_for_status()
         return CalendarAuthorizationResponse.model_validate(resp.json())
@@ -65,10 +85,19 @@ class AgentClient:
         request = ConfirmationRequest(telegram_id=telegram_id)
         
         for confirmation in confirmation_ids:
+            started = time.perf_counter()
             resp = await self._http.post(
                 f"{self._settings.agent_api_url.rstrip('/')}/confirmations/{confirmation}",
                 json=request.model_dump(),
                 headers={"X-API-Key": self._settings.agent_api_key},
+            )
+            audit_event(
+                "agent.api.request",
+                operation="confirm_action",
+                confirmation_id=confirmation,
+                telegram_id=telegram_id,
+                status_code=resp.status_code,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
             )
             resp.raise_for_status()
 

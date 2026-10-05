@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.agent import AgentClient
 from app.schema import SendRequest, SendResponse, TelegramUpdate
 from app.formatting import markdown_to_telegram_html, split_message
+from app.logging import audit_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,7 +34,14 @@ async def telegram_webhook(
     telegram: TelegramClient = Depends(get_telegram_client),
     agent: AgentClient = Depends(get_agent_client),
 ):
+    audit_event(
+        "telegram.update.received",
+        raw_content=settings.audit_log_raw_content,
+        update=update.model_dump(by_alias=True),
+        source_ip=request.client.host if request.client else None,
+    )
     if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
+        audit_event("telegram.update.rejected", reason="invalid_secret")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad secret token")
 
     logger.info("received Telegram update %s", update.update_id)
@@ -49,6 +57,14 @@ async def telegram_webhook(
 
     callback = update.callback_query
     if callback is not None:
+        audit_event(
+            "telegram.callback.clicked",
+            raw_content=settings.audit_log_raw_content,
+            callback_id=callback.id,
+            user=callback.from_.model_dump(by_alias=True),
+            data=callback.data,
+            message=callback.message.model_dump(by_alias=True) if callback.message else None,
+        )
         await telegram.answer_callback_query(callback.id)
         if callback.message is None or not callback.data:
             return {"ok": True}
@@ -118,6 +134,16 @@ async def telegram_webhook(
         )
 
     user_id = str(message.from_.id) if message.from_ else str(message.chat.id)
+    audit_event(
+        "telegram.message.received",
+        raw_content=settings.audit_log_raw_content,
+        update_id=update.update_id,
+        user_id=user_id,
+        chat=message.chat.model_dump(),
+        user=message.from_.model_dump(by_alias=True) if message.from_ else None,
+        message_id=message.message_id,
+        text=message.text,
+    )
     command = message.text.split(maxsplit=1)[0].lower()
     if command == "/connect-calendar" or command.startswith("/connect"):
         telegram_id = message.from_.id if message.from_ else message.chat.id
