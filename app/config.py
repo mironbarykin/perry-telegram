@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     )
 
     outbound_api_key: str = Field(..., alias="OUTBOUND_API_KEY")
+    telegram_parent_ids: str = Field("", alias="TELEGRAM_PARENT_IDS")
 
     public_base_url: str | None = Field(None, alias="PUBLIC_BASE_URL")
 

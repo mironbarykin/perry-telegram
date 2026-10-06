@@ -16,6 +16,24 @@ is working, the placeholder rotates through short status phrases every 5 seconds
 with a `⌛` prefix, then changes to `⏳` before the final response is displayed.
 Final responses include the elapsed thinking time, such as `(12s)`.
 
+On a user's first text message, the connector registers the Telegram identity
+with Perry Engine through `/integrations/telegram/welcome`. The engine records
+the contact as pending and sends Miron a natural-language question containing
+the person's display name and Telegram ID. Miron replies in his normal Perry
+conversation with what he knows; the engine then lets the LLM call its contact
+access proposal tool. The connector renders the resulting confirmation with
+the normal inline approval UI. Until the contact is approved, the engine does
+not execute agent tools for that Telegram user.
+
+### Parent interface
+
+Set `TELEGRAM_PARENT_IDS` to a comma-separated list of Telegram user IDs.
+Parents can then send `/update` to install the persistent parent reply
+keyboard. The visible button text is not sent to the agent as the instruction;
+each button maps to a predefined internal prompt. The shopping button asks for
+one shopping-list message and then prepares separate task proposals for its
+items.
+
 ### Setup
 
 1. Copy `.env.example` to `.env` and fill in the required credentials.

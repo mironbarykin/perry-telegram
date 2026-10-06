@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.client import TelegramClient
 from app.config import Settings, get_settings
 from app.agent import AgentClient
-from app.schema import PendingConfirmation, SendRequest, SendResponse, TelegramUpdate
+from app.schema import (
+    PendingConfirmation,
+    SendRequest,
+    SendResponse,
+    TelegramUpdate,
+    TelegramWelcomeRequest,
+)
 from app.formatting import markdown_to_telegram_html, split_message
 from app.logging import audit_event
 from app.queue import ChatMessageQueue, MessageBatch
@@ -41,6 +47,32 @@ THINKING_PHRASES = (
     "⌛Polishing the answer...",
     "⏳Almost there...",
 )
+PARENT_BUTTONS = (
+    "Ну чё ты там где? 📅",
+    "Когда/от куда забирать? 🚗",
+    "Когда кормить? 🥑",
+    "Закажи мне... 🛒",
+)
+PARENT_BUTTON_PROMPTS = {
+    PARENT_BUTTONS[0]: (
+        "Проверь календарь Мирона и ответь кратко и фактически, где он сейчас "
+        "или какое у него ближайшее актуальное событие. Ничего не изменяй. Дополни планами на день."
+    ),
+    PARENT_BUTTONS[1]: (
+        "Проверь календарь Мирона и ответь кратко и фактически, когда и откуда его нужно забирать, на пару дней вперёд и на выходные."
+        "Верни сообщение с сылками на адресс в гугл картах и временем когда нужно забирать. Расчитай время когда нужно выезжать из дома. Если таких данных нет, так и скажи."
+        "Ничего не изменяй."
+    ),
+    PARENT_BUTTONS[2]: (
+        "Проверь календарь Мирона и ответь кратко и фактически, когда нужно его кормить дома."
+        "кормить. Если таких данных нет, так и скажи. Ничего не изменяй."
+    ),
+}
+PARENT_KEYBOARD = {
+    "keyboard": [[PARENT_BUTTONS[0]], [PARENT_BUTTONS[1]], [PARENT_BUTTONS[2]], [PARENT_BUTTONS[3]]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 
 def get_telegram_client(request: Request) -> TelegramClient:
     return request.app.state.telegram_client
@@ -48,6 +80,15 @@ def get_telegram_client(request: Request) -> TelegramClient:
 
 def get_agent_client(request: Request) -> AgentClient:
     return request.app.state.agent_client
+
+
+def is_parent(settings: Settings, telegram_id: int) -> bool:
+    configured_ids = {
+        int(value.strip())
+        for value in settings.telegram_parent_ids.split(",")
+        if value.strip()
+    }
+    return telegram_id in configured_ids
 
 
 @router.post("/webhook/telegram", status_code=status.HTTP_200_OK)
@@ -158,6 +199,13 @@ async def telegram_webhook(
             text="I can only process text messages for now.",
         )
 
+    command = message.text.split(maxsplit=1)[0].lower()
+    if command == "/start":
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text="⏳ Registering this Telegram contact...",
+        )
+
     user_id = str(message.from_.id) if message.from_ else str(message.chat.id)
     audit_event(
         "telegram.message.received",
@@ -169,7 +217,110 @@ async def telegram_webhook(
         message_id=message.message_id,
         text=message.text,
     )
-    command = message.text.split(maxsplit=1)[0].lower()
+    telegram_user = message.from_
+    telegram_id = telegram_user.id if telegram_user else message.chat.id
+    logger.info(
+        "processing Telegram message from user %s in chat %s",
+        telegram_id,
+        message.chat.id,
+    )
+    display_name = None
+    if telegram_user:
+        display_name = " ".join(
+            part
+            for part in (telegram_user.first_name, telegram_user.last_name)
+            if part
+        ) or None
+    welcome_result: dict[str, object] | None = None
+    try:
+        welcome_result = await agent.register_telegram_welcome(
+            TelegramWelcomeRequest(
+                telegram_id=telegram_id,
+                chat_id=message.chat.id,
+                update_id=update.update_id,
+                username=telegram_user.username if telegram_user else None,
+                display_name=display_name,
+                language_code=telegram_user.language_code if telegram_user else None,
+                message=message.text,
+            )
+        )
+    except Exception:
+        logger.exception(
+            "Telegram welcome registration failed for user %s; continuing message handling",
+            telegram_id,
+        )
+    else:
+        notification_status = welcome_result.get("notification")
+        if notification_status not in {None, "sent"}:
+            logger.warning(
+                "Telegram welcome for user %s did not notify Miron: %s",
+                telegram_id,
+                notification_status,
+            )
+    if command == "/start":
+        if welcome_result is None:
+            start_reply = (
+                "I couldn’t register this Telegram contact right now. "
+                "Please try again in a moment."
+            )
+        elif welcome_result.get("status") == "pending":
+            start_reply = (
+                "Hi! I’ve received your message. Miron needs to approve this "
+                "Telegram contact before I can help here."
+            )
+        else:
+            start_reply = "Hi! Send me a message whenever you need help."
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text=start_reply,
+        )
+        return {"ok": True}
+    if command == "/update":
+        if not is_parent(settings, telegram_id):
+            await telegram.send_message(
+                chat_id=message.chat.id,
+                text="This interface is not configured for this Telegram account.",
+            )
+            return {"ok": True}
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text="Parent interface updated. Choose an action:",
+            reply_markup=PARENT_KEYBOARD,
+        )
+        return {"ok": True}
+    if is_parent(settings, telegram_id) and message.text in PARENT_BUTTON_PROMPTS:
+        await queue_parent_prompt(
+            request,
+            message.chat.id,
+            user_id,
+            PARENT_BUTTON_PROMPTS[message.text],
+        )
+        return {"ok": True}
+    if is_parent(settings, telegram_id) and message.text == PARENT_BUTTONS[3]:
+        pending_order_chats = getattr(request.app.state, "pending_order_chats", set())
+        pending_order_chats.add(message.chat.id)
+        request.app.state.pending_order_chats = pending_order_chats
+        await telegram.send_message(
+            chat_id=message.chat.id,
+            text="Скинь всё, что нужно заказать, одним сообщением :)",
+            reply_markup=PARENT_KEYBOARD,
+        )
+        return {"ok": True}
+    pending_order_chats = getattr(request.app.state, "pending_order_chats", set())
+    if is_parent(settings, telegram_id) and message.chat.id in pending_order_chats:
+        pending_order_chats.discard(message.chat.id)
+        await queue_parent_prompt(
+            request,
+            message.chat.id,
+            user_id,
+            (
+                "Создай отдельные задачи для каждого пункта из следующего списка "
+                "покупок. Сначала разберись со списком, не придумывай отсутствующие "
+                "товары, и подготовь предложения задач для подтверждения. "
+                "Список покупок:\n" + message.text
+            ),
+        )
+        return {"ok": True}
     if command == "/connect-calendar" or command.startswith("/connect"):
         telegram_id = message.from_.id if message.from_ else message.chat.id
         try:
@@ -217,6 +368,16 @@ async def telegram_webhook(
         message.chat.id,
     )
     return {"ok": True}
+
+
+async def queue_parent_prompt(
+    request: Request,
+    chat_id: int,
+    user_id: str,
+    prompt: str,
+) -> None:
+    queue: ChatMessageQueue = request.app.state.message_queue
+    await queue.enqueue(chat_id, user_id, prompt)
 
 
 async def process_message_batch(

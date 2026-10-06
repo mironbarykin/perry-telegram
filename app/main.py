@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     app.state.telegram_client = TelegramClient(settings)
     app.state.agent_client = AgentClient(settings)
     app.state.confirmation_batches = {}
+    app.state.pending_order_chats = set()
     app.state.message_queue = ChatMessageQueue(
         settings.telegram_message_debounce_seconds,
         lambda batch: process_message_batch(

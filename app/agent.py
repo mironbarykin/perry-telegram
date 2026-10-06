@@ -13,6 +13,7 @@ from app.schema import (
     CalendarAuthorizationRequest,
     CalendarAuthorizationResponse,
     ConfirmationRequest,
+    TelegramWelcomeRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,12 @@ class AgentClient:
         user_id: str,
         text: str,
     ) -> AgentResponse:
+        try:
+            telegram_id = int(user_id)
+        except ValueError as exc:
+            raise ValueError(f"Invalid Telegram user ID: {user_id}") from exc
         request = AgentRequest(
-            telegram_id=user_id,
+            telegram_id=telegram_id,
             message=text,
             extended_confirmations=True,
         )
@@ -80,6 +85,36 @@ class AgentClient:
         )
         resp.raise_for_status()
         return CalendarAuthorizationResponse.model_validate(resp.json())
+
+    async def register_telegram_welcome(
+        self,
+        request: TelegramWelcomeRequest,
+    ) -> dict[str, object]:
+        payload = request.model_dump()
+        started = time.perf_counter()
+        resp = await self._http.post(
+            f"{self._settings.agent_api_url.rstrip('/')}/integrations/telegram/welcome",
+            json=payload,
+            headers={"X-API-Key": self._settings.agent_api_key},
+        )
+        audit_event(
+            "agent.api.request",
+            operation="register_telegram_welcome",
+            payload=payload,
+            status_code=resp.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if not isinstance(result, dict):
+            raise ValueError("Telegram welcome endpoint returned an invalid response")
+        logger.info(
+            "Telegram welcome registered user %s with status=%s notification=%s",
+            payload["telegram_id"],
+            result.get("status"),
+            result.get("notification", "not_applicable"),
+        )
+        return result
 
     async def confirm_actions(
         self,

@@ -12,6 +12,7 @@ class TelegramUser(BaseModel):
     id: int
     is_bot: bool = False
     first_name: str | None = None
+    last_name: str | None = None
     username: str | None = None
     language_code: str | None = None
 
@@ -43,7 +44,7 @@ class TelegramCallbackQuery(BaseModel):
 
 
 class AgentRequest(BaseModel):
-    telegram_id: str
+    telegram_id: int
     message: str
     extended_confirmations: bool = True
 
@@ -54,6 +55,16 @@ class CalendarAuthorizationRequest(BaseModel):
 
 class CalendarAuthorizationResponse(BaseModel):
     authorization_url: str = Field(min_length=1)
+
+
+class TelegramWelcomeRequest(BaseModel):
+    telegram_id: int = Field(gt=0)
+    chat_id: int
+    update_id: int = Field(ge=0)
+    username: str | None = Field(default=None, max_length=120)
+    display_name: str | None = Field(default=None, max_length=120)
+    language_code: str | None = Field(default=None, max_length=20)
+    message: str | None = Field(default=None, max_length=4096)
 
 
 class AgentResponse(BaseModel):
