@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+import html
+import json
 import logging
+import time
 from uuid import uuid4
 
 import httpx
@@ -10,13 +14,22 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.client import TelegramClient
 from app.config import Settings, get_settings
 from app.agent import AgentClient
-from app.schema import SendRequest, SendResponse, TelegramUpdate
+from app.schema import PendingConfirmation, SendRequest, SendResponse, TelegramUpdate
 from app.formatting import markdown_to_telegram_html, split_message
 from app.logging import audit_event
 from app.queue import ChatMessageQueue, MessageBatch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_HIDDEN_CONFIRMATION_FIELDS = {
+    "id",
+    "task_id",
+    "tasklist_id",
+    "etag",
+    "risk",
+    "_risk",
+    "destination_tasklist_id",
+}
 THINKING_PHRASES = (
     "⏳Thinking through it...",
     "⌛Connecting the dots...",
@@ -215,6 +228,7 @@ async def process_message_batch(
 ) -> None:
     chat_id = batch.chat_id
     text = "\n".join(batch.texts)
+    thinking_started = time.perf_counter()
     placeholder = await telegram.send_message(
         chat_id=chat_id, text=THINKING_PHRASES[0]
     )
@@ -238,6 +252,8 @@ async def process_message_batch(
         logger.exception("agent engine call failed (%s: %s)", type(exc).__name__, exc)
         reply = "Hi, I'm busy rn. Please try again later ;)"
         agent_response = None
+
+    reply = f"({max(1, round(time.perf_counter() - thinking_started))}s)\n{reply}"
 
     reply_markup = None
     if agent_response is not None and agent_response.pending_confirmations:
@@ -312,12 +328,11 @@ async def process_message_batch(
             return
 
         for confirmation in agent_response.pending_confirmations:
-            details = " ".join(
-                part for part in [confirmation.id, confirmation.action_type] if part
-            )
+            details = _format_confirmation_details(confirmation)
             await telegram.send_message(
                 chat_id=chat_id,
                 text=details or "Confirmation request",
+                parse_mode="HTML",
                 disable_notification=True,
                 reply_markup={
                     "inline_keyboard": [
@@ -336,6 +351,116 @@ async def process_message_batch(
             )
     except Exception:
         logger.exception("failed to deliver agent response to Telegram for chat %s", chat_id)
+
+
+def _format_confirmation_details(confirmation: PendingConfirmation) -> str:
+    heading = _confirmation_field_label(
+        confirmation.action_type or "Confirmation request"
+    )
+    if not confirmation.details:
+        return f"<b>{html.escape(heading)}</b>"
+
+    visible_details = {
+        key: value
+        for key, value in confirmation.details.items()
+        if key not in _HIDDEN_CONFIRMATION_FIELDS
+    }
+    if not visible_details:
+        return f"<b>{html.escape(heading)}</b>"
+
+    detail_lines = ["<b>What will change?</b>"]
+    changes = visible_details.pop("changes", None)
+    if isinstance(changes, dict) and changes:
+        detail_lines.extend(_format_change_lines(changes))
+    elif "_preview" in visible_details:
+        detail_lines.append(
+            f"• {html.escape(_format_confirmation_value(visible_details['_preview']))}"
+        )
+    else:
+        for key, value in sorted(visible_details.items()):
+            detail_lines.append(
+                f"• <b>{html.escape(_confirmation_field_label(key))}:</b> "
+                f"{html.escape(_format_confirmation_value(value, key))}"
+            )
+
+    return f"<b>{html.escape(heading)}</b>\n" + "\n".join(detail_lines)
+
+
+def _format_change_lines(changes: dict[str, object]) -> list[str]:
+    visible_changes = {
+        key: value
+        for key, value in changes.items()
+        if key not in {"calendar_id", "event_id"}
+    }
+    event = visible_changes.pop("event", None)
+    if isinstance(event, dict):
+        event_fields = event
+    elif {"description", "end", "start", "summary"} & visible_changes.keys():
+        event_fields = visible_changes
+        visible_changes = {}
+    else:
+        event_fields = {}
+
+    lines: list[str] = []
+    if event_fields:
+        lines.append("<b>Event</b>")
+        preferred_order = ("description", "end", "start", "summary")
+        ordered_keys = [
+            *[key for key in preferred_order if key in event_fields],
+            *sorted(key for key in event_fields if key not in preferred_order),
+        ]
+        for key in ordered_keys:
+            lines.append(
+                f"• <b>{html.escape(_confirmation_field_label(key))}:</b> "
+                f"{html.escape(_format_confirmation_value(event_fields[key], key))}"
+            )
+
+    for key, value in sorted(visible_changes.items()):
+        lines.append(
+            f"• <b>{html.escape(_confirmation_field_label(key))}:</b> "
+            f"{html.escape(_format_confirmation_value(value, key))}"
+        )
+    return lines
+
+
+def _format_confirmation_value(value: object, key: str | None = None) -> str:
+    if key in {"start", "end"} and isinstance(value, dict):
+        date_value = value.get("dateTime") or value.get("date")
+        if isinstance(date_value, str):
+            return _format_event_datetime(date_value)
+    if key == "due":
+        date_value = value
+        if isinstance(value, dict):
+            date_value = value.get("dateTime") or value.get("date")
+        if isinstance(date_value, str):
+            return _format_event_datetime(date_value)
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_event_datetime(value: str, *, date_only: bool = False) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if date_only or "T" not in value or (
+        parsed.hour == 0 and parsed.minute == 0 and parsed.second == 0
+    ):
+        return f"{parsed.strftime('%a')}, {parsed.day} {parsed.strftime('%b %Y')}"
+    return f"{parsed.strftime('%a')}, {parsed.day} {parsed.strftime('%b %Y')} at {parsed.hour:02d}:{parsed.minute:02d}"
+
+
+def _confirmation_field_label(key: str) -> str:
+    return key.lstrip("_").replace("_", " ").capitalize()
 
 
 async def _rotate_thinking_status(

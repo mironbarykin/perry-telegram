@@ -35,7 +35,11 @@ class AgentClient:
         user_id: str,
         text: str,
     ) -> AgentResponse:
-        request = AgentRequest(telegram_id=user_id, message=text)
+        request = AgentRequest(
+            telegram_id=user_id,
+            message=text,
+            extended_confirmations=True,
+        )
 
         payload = request.model_dump()
         started = time.perf_counter()

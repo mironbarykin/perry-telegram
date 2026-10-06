@@ -45,6 +45,7 @@ class TelegramCallbackQuery(BaseModel):
 class AgentRequest(BaseModel):
     telegram_id: str
     message: str
+    extended_confirmations: bool = True
 
 
 class CalendarAuthorizationRequest(BaseModel):
@@ -64,6 +65,7 @@ class PendingConfirmation(BaseModel):
     id: str
     action_type: str | None = None
     expires_in_minutes: int | None = None
+    details: dict[str, object] | None = None
 
 class ConfirmationRequest(BaseModel):
     telegram_id: int = Field(gt=0)

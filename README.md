@@ -7,12 +7,14 @@ message includes a **Confirm all** button that approves every action in that
 response.
 
 Individual confirmation prompts are sent silently so they do not generate an
-additional Telegram notification.
+additional Telegram notification. Each prompt includes the action details
+provided by Perry Engine when available.
 
 Messages sent in a quick burst are debounced for 500 ms, combined in order, and
 processed sequentially per chat so Perry keeps one coherent context. While Perry
 is working, the placeholder rotates through short status phrases every 5 seconds
 with a `⌛` prefix, then changes to `⏳` before the final response is displayed.
+Final responses include the elapsed thinking time, such as `(12s)`.
 
 ### Setup
 
